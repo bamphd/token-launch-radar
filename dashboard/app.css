@@ -53,6 +53,7 @@ a { color: var(--accent); }
 .brand { display: flex; align-items: center; gap: var(--step-3); }
 .mark { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); flex: none; }
 .brand-name { font-family: var(--font-num); font-size: 13px; letter-spacing: 0.02em; color: var(--muted); }
+.badge { font-family: var(--font-num); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
 .top-meta { display: flex; flex-wrap: wrap; gap: var(--step-3); justify-content: flex-end; color: var(--muted); font-size: 13px; }
 .top-meta span { white-space: nowrap; }
 .lede { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr); gap: var(--step-6); padding: var(--step-6) 0 var(--step-5); }
@@ -80,6 +81,11 @@ a { color: var(--accent); }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { padding: var(--step-3) var(--step-3); border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
 th { color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+thead th { position: sticky; top: 0; background: var(--surface); z-index: 2; box-shadow: 0 1px 0 var(--border); }
+.rank-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 50%; font-size: 13px; font-weight: 600; }
+.rank-1 { background: var(--accent); color: var(--surface); }
+.rank-2 { background: color-mix(in srgb, var(--accent) 70%, var(--surface)); color: var(--surface); }
+.rank-3 { background: color-mix(in srgb, var(--accent) 45%, var(--surface)); color: var(--surface); }
 th button { display: inline-flex; align-items: center; gap: var(--step-1); border: 0; background: none; padding: 0; color: inherit; font: inherit; }
 th button:hover { color: var(--ink); }
 tbody tr { cursor: pointer; }
@@ -98,6 +104,14 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
 .model { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-3); }
+.model h3 { margin-top: var(--step-2); }
+.calib-wrap { max-height: 340px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-control); }
+table.calib { font-size: 13px; }
+table.calib th, table.calib td { padding: var(--step-2) var(--step-3); }
+table.calib tbody tr { cursor: default; }
+table.calib tbody tr:hover { background: none; }
+.foot { padding: var(--step-5) 0 0; border-top: 1px solid var(--border); margin-top: var(--step-5); }
+.foot p { max-width: 90ch; }
 .formula { font-family: var(--font-num); font-size: 13px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
 .empty { padding: var(--step-7) var(--step-5); text-align: center; display: grid; gap: var(--step-3); justify-items: center; }
 .empty p { color: var(--muted); }
@@ -123,8 +137,12 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 .equation { display: grid; gap: var(--step-2); font-family: var(--font-num); font-size: 13px; }
 .equation div { display: flex; justify-content: space-between; gap: var(--step-3); }
 .equation span { color: var(--muted); }
-.steps { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-3); }
-.steps li { padding-left: var(--step-1); }
+.equation .total { border-top: 1px solid var(--border); padding-top: var(--step-2); }
+.equation .total span { color: var(--ink); font-weight: 600; }
+.equation .total b { color: var(--accent); }
+.steps { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-3); list-style: none; counter-reset: step; }
+.steps li { padding-left: var(--step-1); counter-increment: step; position: relative; }
+.steps li::before { content: counter(step); position: absolute; left: calc(-1 * var(--step-5)); top: 1px; width: 20px; height: 20px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; font-family: var(--font-num); }
 .steps b { display: block; font-weight: 500; }
 .cost { color: var(--muted); font-size: 12px; font-family: var(--font-num); }
 
