@@ -3,12 +3,87 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by calibrated implied value</title>
+<title>Token Launch Radar — a fitted value for every protocol still without a token</title>
+<meta name="description" content="198 pre-token protocols ranked by a value curve fitted to the snapshot's own trading protocols, each with a rank range from 200 refits and a dated, costed farm plan.">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<header class="mast">
+  <div class="mast-inner">
+    <p class="eyebrow">Token launch radar · model radar-3</p>
+    <h1>Which launch is worth farming?</h1>
+    <p class="standfirst">Every protocol in the snapshot that still has no token, ranked by the value a fitted curve puts on its TVL — with a rank range that says how sure the curve is, and a farm plan that says what the position costs, in dollars, days, and hours.</p>
+  </div>
+</header>
+<main>
+  <section class="kpis" id="kpis" aria-label="Snapshot summary"></section>
+  <section class="controls" aria-label="Board controls">
+    <div class="tabs" role="tablist" aria-label="Board views">
+      <button type="button" role="tab" id="tab-board" aria-selected="true">Launch board</button>
+      <button type="button" role="tab" id="tab-live" aria-selected="false">Traded anchors</button>
+    </div>
+    <label class="field search">Search
+      <input type="search" id="q" placeholder="Name, slug, or category" autocomplete="off">
+    </label>
+    <label class="field">Category
+      <select id="category"><option value="">All categories</option></select>
+    </label>
+    <label class="field">Verdict
+      <select id="verdict">
+        <option value="">All verdicts</option>
+        <option value="FARM">FARM</option>
+        <option value="THIN">THIN</option>
+        <option value="SKIP">SKIP</option>
+      </select>
+    </label>
+    <label class="field">Sort by
+      <select id="sort">
+        <option value="implied">Implied value</option>
+        <option value="tvl">TVL</option>
+        <option value="growth">7-day change</option>
+        <option value="age">Age</option>
+        <option value="efficiency">Implied per gas dollar</option>
+      </select>
+    </label>
+    <p class="count" id="count" aria-live="polite"></p>
+  </section>
+  <section id="board" tabindex="-1">
+    <table class="board" id="board-table">
+      <thead><tr>
+        <th scope="col">Rank</th>
+        <th scope="col">Protocol</th>
+        <th scope="col">TVL</th>
+        <th scope="col">7d</th>
+        <th scope="col">Implied value</th>
+        <th scope="col">Rank range</th>
+        <th scope="col">Verdict</th>
+        <th scope="col">Farm cost</th>
+      </tr></thead>
+      <tbody id="board-body"></tbody>
+    </table>
+  </section>
+  <section id="live" hidden>
+    <p class="section-note">The trading protocols the curve learned from, richest first. Their market-cap / TVL ratios are the votes the fit counts.</p>
+    <table class="board" id="live-table">
+      <thead><tr>
+        <th scope="col">Protocol</th>
+        <th scope="col">TVL</th>
+        <th scope="col">Market cap</th>
+        <th scope="col">Multiple</th>
+        <th scope="col">7d</th>
+      </tr></thead>
+      <tbody id="live-body"></tbody>
+    </table>
+  </section>
+  <section class="panel" id="model" aria-label="The fitted model"></section>
+  <section class="panel" id="accounting" aria-label="Coverage and method"></section>
+</main>
+<dialog id="detail" aria-label="Protocol detail"></dialog>
+<aside id="tray" aria-label="Compare tray"></aside>
+<footer class="foot">
+  <p>Static page, no network: the board, the model record, and the plans are all computed from one frozen snapshot, and two runs of the program are byte-identical. Gas figures are planning estimates, not quotes. Farming carries smart-contract risk — a fresh wallet, a small position, and links taken only from a protocol's own official accounts.</p>
+</footer>
 <script src="../data.js"></script>
 <script src="app.js"></script>
 </body>
