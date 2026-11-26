@@ -1,4 +1,4 @@
-// Token launch radar, model radar-3: one run reads the frozen snapshot, fits the value
+// Token launch radar, model radar-4: one run reads the frozen snapshot, fits the value
 // curve, tests it blind, ranks the launch candidates, costs their farm plans, and lays
 // out the board, the dashboard, and the dossier the judge reads. The same snapshot in
 // always produces the same bytes out: no clock, no network, no randomness but the
@@ -123,9 +123,9 @@ function main(): void {
   const bottom = rows[rows.length - 1]!;
   console.log(
     [
-      `radar-3: ${snapshot.protocols.length} protocols, ${rows.length} rows, watchlist ${payload.coverage.watchlist_covered}/${payload.coverage.watchlist_size}`,
+      `radar-4: ${snapshot.protocols.length} protocols, ${rows.length} rows, watchlist ${payload.coverage.watchlist_covered}/${payload.coverage.watchlist_size}`,
       `top ${top.slug} $${top.implied_value_usd.toLocaleString('en-US')}, bottom ${bottom.slug} $${bottom.implied_value_usd.toLocaleString('en-US')}`,
-      `fit: intercept ${payload.fit.intercept}, slope ${payload.fit.slope}, ${payload.fit.comp_count} comps; leave-one-out ${payload.validation.loo.curve_growth_age} vs flat ${payload.validation.loo.flat_median}`,
+      `fit: intercept ${payload.fit.intercept}, slope ${payload.fit.slope}, size ${payload.fit.w_coef}, ${payload.fit.comp_count} comps; leave-one-out ${payload.validation.loo.final} vs flat ${payload.validation.loo.flat_median}; walk-forward ${payload.validation.walk_forward.final} vs flat ${payload.validation.walk_forward.flat}`,
       `dossier: ${dossier.length} bytes, text ${textBytes} of ${TEXT_CAP_BYTES} bytes`,
     ].join('\n'),
   );

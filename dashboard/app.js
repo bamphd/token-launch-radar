@@ -1,8 +1,8 @@
-// Radar-3's dashboard: a pure rendering of window.RADAR, the dataset main.ts writes
+// Radar-4's dashboard: a pure rendering of window.RADAR, the dataset main.ts writes
 // beside dashboard/. The page makes no requests and derives nothing twice: the board,
 // the model panel, the accounting, and the detail drawer all read the same shipped
 // figures, so the page cannot disagree with board.json. One check proves the wiring:
-// the drawer recomputes its row from the curve and the two factors exactly as the
+// the drawer recomputes its row from the model value and the two factors exactly as the
 // model did, and says whether the result is the number board.json carries.
 //
 // The state lives in the hash — search, category, verdict, sort, tab, the open
@@ -116,9 +116,9 @@
       [cov.total + ' / ' + cov.total, 'protocols accounted for'],
       [String(cov.ranked), 'pre-token launches ranked'],
       [cov.watchlist_covered + ' / ' + cov.watchlist_size, 'watchlist covered'],
-      [String(DATA.fit.comp_count), 'trading protocols fitted the curve'],
-      [err3(loo.curve_growth_age), 'leave-one-out error, vs ' + err3(loo.flat_median) + ' flat'],
-      [err3(walk.curve_err), 'walk-forward error, vs ' + err3(walk.flat_err) + ' flat'],
+      [String(DATA.fit.comp_count), 'trading protocols fitted the model'],
+      [err3(loo.final), 'leave-one-out error, vs ' + err3(loo.flat_median) + ' flat'],
+      [err3(walk.final), 'walk-forward error, vs ' + err3(walk.flat) + ' flat'],
     ];
     kpis.textContent = '';
     tiles.forEach(function (t) {
@@ -150,35 +150,40 @@
     var fit = DATA.fit;
     var val = DATA.validation;
     panel.appendChild(tag('h2', null, 'The fitted model, and the tests it passed'));
-    panel.appendChild(tag('p', 'intro', 'The curve is fitted to the snapshot\u2019s own trading protocols — each one votes with its market cap and its TVL — and then tested blind before it ranks anything. The tests below ran on this snapshot, in this run; the numbers are the model\u2019s own record, not a claim about it.'));
+    panel.appendChild(tag('p', 'intro', 'The model is fitted to the snapshot\u2019s own trading protocols — each one votes with its market cap and its TVL — and then tested blind before it ranks anything. The tests below ran on this snapshot, in this run; the numbers are the model\u2019s own record, not a claim about it.'));
     var formula = tag('div', 'formula');
+    var growthNote = fit.growth_coef === 0
+      ? 'growth fitted (' + (val.loo.final_growth !== undefined ? 'dropped: it worsens leave-one-out' : 'dropped') + '), age fitted and dropped the same way — neither moves a value'
+      : 'growth coefficient ' + fit.growth_coef;
     formula.textContent =
-      'log(market cap) = ' + fit.intercept + ' + ' + fit.slope + ' \u00d7 log(TVL) + category shift (shrunk n / (n + 4))\n' +
-      'implied = exp(curve) \u00d7 (1 + clamped 7-day change) \u00d7 (1 + age / 365)^0.05, age capped at 3 years';
+      'log(market cap) = ' + fit.intercept + ' + ' + fit.slope + ' \u00d7 log(TVL) + ' + fit.w_coef + ' \u00d7 within-category size + category shift (shrunk n / (n + 4)) + chain shift (shrunk n / (n + 4))\n' +
+      'implied = exp(model), rounded to whole dollars. ' + growthNote + '.';
     panel.appendChild(formula);
     var grid = tag('div', 'model-grid');
     var left = tag('div');
     left.appendChild(tag('h3', null, 'Blind tests: mean absolute log error, lower wins'));
     left.appendChild(miniTable(['Scoring', 'Error'], [
-      ['Fitted curve', err3(val.loo.curve)],
-      ['Curve + growth', err3(val.loo.curve_growth)],
-      ['Curve + growth + age', err3(val.loo.curve_growth_age)],
+      ['Fitted line', err3(val.loo.line)],
+      ['Line + category shifts', err3(val.loo.line_category)],
+      ['Line + category + size', err3(val.loo.line_category_size)],
+      ['Final model (+ chain shifts)', err3(val.loo.final)],
+      ['Final + fitted growth', err3(val.loo.final_growth)],
+      ['Final + growth + fitted age', err3(val.loo.final_growth_age)],
       ['Flat global median', err3(val.loo.flat_median)],
-      ['Per-category medians', err3(val.loo.category_median)],
-    ], 2));
-    left.appendChild(tag('p', null, 'Walk-forward: fitted on the oldest ' + val.walk_forward.train_n + ' dated comps, the curve predicts the newest ' + val.walk_forward.test_n + ' with error ' + err3(val.walk_forward.curve_err) + ', against ' + err3(val.walk_forward.flat_err) + ' for the flat median on the same split.'));
+    ], 3));
+    left.appendChild(tag('p', null, 'Walk-forward: fitted on the oldest ' + val.walk_forward.train_n + ' dated comps, the model predicts the newest ' + val.walk_forward.test_n + ' with error ' + err3(val.walk_forward.final) + ', against ' + err3(val.walk_forward.flat) + ' for the flat median on the same split. Growth would improve that test to ' + err3(val.walk_forward.final_growth) + ' and age would wreck it at ' + err3(val.walk_forward.final_growth_age) + ' — but a term stays only when it improves both blind tests, so both stay out.'));
     var decisions = tag('ul');
     val.decisions.forEach(function (d) { decisions.appendChild(tag('li', null, d)); });
     left.appendChild(decisions);
-    left.appendChild(tag('p', null, 'Rank ranges come from ' + val.refits + ' bootstrap refits of the curve (seed ' + val.seed + '): each row\u2019s range is the middle 80% of its refit ranks.'));
+    left.appendChild(tag('p', null, 'Rank ranges come from ' + val.refits + ' bootstrap refits of the model (seed ' + val.seed + '): each row\u2019s range is the middle 80% of its refit ranks.'));
     var right = tag('div');
-    right.appendChild(tag('h3', null, 'Calibration: what the curve prices $100M of TVL at'));
+    right.appendChild(tag('h3', null, 'Calibration: what the model prices $100M of TVL at'));
     var scroll = tag('div', 'calib-scroll');
     scroll.appendChild(miniTable(['Category', 'Comps', 'Shift', 'Multiple'], fit.calibration.map(function (c) {
       return [c.category, String(c.comps), (c.shift >= 0 ? '+' : '') + c.shift.toFixed(4), 'x' + c.multiple_at_100m.toFixed(4)];
     }), -1));
     right.appendChild(scroll);
-    right.appendChild(tag('p', null, 'The global median multiple is x' + fit.global_median + '. Categories with few comps borrow the shared line through shrinkage, so a single loud protocol cannot set its category\u2019s price.'));
+    right.appendChild(tag('p', null, 'The global median multiple is x' + fit.global_median + '. Categories with few comps borrow the shared line through shrinkage, so a single loud protocol cannot set its category\u2019s price. Chain shifts adjust the multiple further, and ' + fit.ratio_excluded + ' trading protocols sit the fit out with a ratio outside 0.01..10.'));
     grid.appendChild(left);
     grid.appendChild(right);
     panel.appendChild(grid);
@@ -203,7 +208,7 @@
     });
     if (reasons.length) panel.appendChild(tag('p', 'intro', 'Set aside: ' + reasons.join(' · ') + '.'));
     var econ = DATA.economy;
-    panel.appendChild(tag('p', 'intro', 'Verdicts split the board into thirds by implied value per gas dollar — FARM at or above ' + econ.verdict_cuts.farm_above.toLocaleString('en-US') + ', SKIP below ' + econ.verdict_cuts.skip_below.toLocaleString('en-US') + ' — with ' + econ.verdict_counts.FARM + ' FARM, ' + econ.verdict_counts.THIN + ' THIN, and ' + econ.verdict_counts.SKIP + ' SKIP.'));
+    panel.appendChild(tag('p', 'intro', 'Verdicts split the board into thirds by implied value per dollar of total cost — gas plus forgone yield plus the exit transaction — FARM at or above ' + econ.verdict_cuts.farm_above.toLocaleString('en-US') + ', SKIP below ' + econ.verdict_cuts.skip_below.toLocaleString('en-US') + ' — with ' + econ.verdict_counts.FARM + ' FARM, ' + econ.verdict_counts.THIN + ' THIN, and ' + econ.verdict_counts.SKIP + ' SKIP. A top-third row whose evidence is partial farms thin instead.'));
     var method = tag('div', 'method');
     (DATA.methodology || []).forEach(function (m) { method.appendChild(tag('p', null, m)); });
     panel.appendChild(method);
@@ -247,7 +252,7 @@
       var verdictCell = tag('td');
       verdictCell.appendChild(verdictPill(r.farm.verdict));
       tr.appendChild(verdictCell);
-      tr.appendChild(tag('td', 'num', '$' + r.farm.gas_usd + ' · ' + r.farm.hours + 'h'));
+      tr.appendChild(tag('td', 'num', '$' + r.farm.total_cost_usd + ' · ' + r.farm.hours + 'h'));
       tbody.appendChild(tr);
     });
   }
@@ -308,10 +313,12 @@
     drawer.appendChild(tag('h3', null, 'Why this number'));
     var audit = tag('div', 'audit');
     audit.appendChild(auditRow('TVL', moneyFull(row.tvl_usd)));
-    audit.appendChild(auditRow('Curve value (fit + category shift)', moneyFull(row.curve_usd)));
+    audit.appendChild(auditRow('Model value (fit + shifts)', moneyFull(row.curve_usd)));
     audit.appendChild(auditRow('Category shift', (row.category_shift >= 0 ? '+' : '') + row.category_shift.toFixed(4) + ' (' + row.category_shift_n + (row.category_shift_n === 1 ? ' comp' : ' comps') + ')'));
-    audit.appendChild(auditRow('Growth factor (7d ' + pct(row.change_7d) + ')', '\u00d7' + row.growth_factor.toFixed(4)));
-    audit.appendChild(auditRow('Age factor (' + ageLabel(row.age_days) + ')', '\u00d7' + row.age_factor.toFixed(4)));
+    audit.appendChild(auditRow('Chain shift (' + (row.chains[0] || 'no chain') + ')', (row.chain_shift >= 0 ? '+' : '') + row.chain_shift.toFixed(4) + ' (' + row.chain_shift_n + (row.chain_shift_n === 1 ? ' comp' : ' comps') + ')'));
+    audit.appendChild(auditRow('Within-category size (' + row.within_size.toFixed(2) + ' \u00d7 ' + row.size_coef + ')', '\u00d7' + Math.exp(row.size_coef * row.within_size).toFixed(4)));
+    audit.appendChild(auditRow('Growth factor (7d ' + pct(row.change_7d) + ', fitted and dropped)', '\u00d71.0000'));
+    audit.appendChild(auditRow('Age factor (' + ageLabel(row.age_days) + ', fitted and dropped)', '\u00d71.0000'));
     audit.appendChild(auditRow('Implied value', moneyFull(row.implied_value_usd), true));
     drawer.appendChild(audit);
     var recomputed = Math.max(1, Math.round(row.curve_exact * row.growth_exact * row.age_exact));
@@ -337,6 +344,8 @@
     });
     kin.appendChild(kinBody);
     drawer.appendChild(kin);
+    var peers = tag('p', 'recompute', row.peers.n + ' comparable protocols sit near this TVL in ' + (row.category || 'Uncategorized') + ', and ' + row.peers.traded + ' of them already trade — a smoothed share of ' + Math.round(row.peers.prevalence * 100) + '% already trading. That is a snapshot share of the peer group, not a probability this protocol launches.');
+    drawer.appendChild(peers);
 
     drawer.appendChild(tag('h3', null, 'Farm plan — ' + row.farm.hold_days + ' days, ' + row.farm.start_date + ' to ' + row.farm.hold_end_date));
     var plan = tag('ol', 'plan');
@@ -354,12 +363,17 @@
     drawer.appendChild(tag('h3', null, 'The economics, netted'));
     var econ = tag('div', 'econ');
     [
-      ['$' + row.farm.gas_usd, 'total gas'],
+      ['$' + row.farm.total_cost_usd, 'total cost'],
+      ['$' + row.farm.gas_usd, 'gas'],
+      ['$' + row.farm.opportunity_cost_usd, 'forgone yield (5% a year)'],
+      ['$' + row.farm.exit_fee_usd, 'exit transaction'],
       ['$' + row.farm.deposit_usd, 'deposit (returns on exit)'],
       [row.farm.hours + 'h', 'attention over ' + row.farm.hold_days + ' days'],
       ['$' + row.farm.break_even_usd, 'break-even allocation'],
+      ['$' + row.farm.break_even_low_usd + ' – $' + row.farm.break_even_high_usd, 'break-even at half / double gas'],
       [row.farm.break_even_share_pct + '%', 'of implied value'],
-      [row.farm.efficiency.toLocaleString('en-US'), 'implied $ per gas $'],
+      [row.farm.efficiency.toLocaleString('en-US'), 'implied $ per cost $'],
+      [row.farm.evidence_status, 'evidence'],
     ].forEach(function (pair) {
       var cell = tag('div');
       cell.appendChild(tag('b', null, pair[0]));
@@ -367,7 +381,7 @@
       econ.appendChild(cell);
     });
     drawer.appendChild(econ);
-    var verdictLine = tag('p', 'recompute', 'Verdict: ' + row.farm.verdict + ' — ' + (row.farm.verdict === 'FARM' ? 'the top third of the board by implied value per gas dollar.' : row.farm.verdict === 'THIN' ? 'the middle third: worth it only if the chain stays cheap.' : 'the bottom third: the gas buys too little implied value.'));
+    var verdictLine = tag('p', 'recompute', 'Verdict: ' + row.farm.verdict + ' — ' + row.farm.verdict_reason);
     drawer.appendChild(verdictLine);
 
     var actions = tag('div', 'drawer-actions');
@@ -418,7 +432,7 @@
       if (!row) return;
       var card = tag('div', 'tray-card');
       card.appendChild(tag('b', null, '#' + row.rank + ' ' + row.name));
-      card.appendChild(tag('span', null, moneyShort(row.implied_value_usd) + ' · range ' + row.rank_low + '\u2013' + row.rank_high + ' · ' + row.farm.verdict + ' · $' + row.farm.gas_usd + ' gas · break-even ' + row.farm.break_even_share_pct + '%'));
+      card.appendChild(tag('span', null, moneyShort(row.implied_value_usd) + ' · range ' + row.rank_low + '\u2013' + row.rank_high + ' · ' + row.farm.verdict + ' · $' + row.farm.total_cost_usd + ' cost · break-even ' + row.farm.break_even_share_pct + '%'));
       var remove = tag('button', null, 'Remove');
       remove.type = 'button';
       remove.addEventListener('click', function () { toggleCompare(slug); });

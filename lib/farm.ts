@@ -76,6 +76,58 @@ export interface FarmEconomics {
   break_even_share_pct: number;
   efficiency: number;
   verdict: 'FARM' | 'THIN' | 'SKIP';
+  /** Forgone yield on the deployed deposit at a stated 5% a year, over the hold. */
+  opportunity_cost_usd: number;
+  /** One more transaction at the chain's gas rate, to exit the position. */
+  exit_fee_usd: number;
+  /** Everything the farm costs: gas plus forgone yield plus the exit transaction. */
+  total_cost_usd: number;
+  /** Break-even allocation when gas runs at half price, and at double price. */
+  break_even_low_usd: number;
+  break_even_high_usd: number;
+  /** Whether the plan's inputs are all on record, or part of them is unrecorded. */
+  evidence_status: 'supported' | 'partial';
+  /** The decisive reason for the verdict, beside the verdict itself. */
+  verdict_reason: string;
+}
+
+/** The forgone yield assumed on deployed capital, a year of it. */
+export const OPPORTUNITY_APY = 0.05;
+
+/** One plan's cost parts: the gas across the hold, the forgone yield, the exit transaction, and their sum. */
+export function costParts(p: Protocol, ageDays: number | null): {
+  gas_total: number;
+  opportunity: number;
+  exit_fee: number;
+  total: number;
+} {
+  const gasTx = gasFor(p.chains);
+  const hold = holdDays(ageDays);
+  const weeks = Math.max(1, Math.ceil(hold / 7));
+  const gasTotal = gasTx * (1 + 2 + weeks + 1);
+  const opportunity = roundTo(depositFor(p.tvl_usd) * OPPORTUNITY_APY * (hold / 365), 2);
+  return { gas_total: gasTotal, opportunity, exit_fee: gasTx, total: roundTo(gasTotal + opportunity + gasTx, 2) };
+}
+
+/** The whole cost of farming a protocol: gas plus forgone yield plus the exit transaction. */
+export function totalCostFor(p: Protocol, ageDays: number | null): number {
+  return costParts(p, ageDays).total;
+}
+
+/** Whether the plan's evidence is complete: a listing date and at least one chain on record. */
+export function evidenceStatus(p: Protocol, ageDays: number | null): 'supported' | 'partial' {
+  if (ageDays === null || p.chains.length === 0) return 'partial';
+  return 'supported';
+}
+
+/**
+ * The verdict the board prints: the efficiency third, except a top-third row whose
+ * evidence is partial farms thin instead — weak evidence caps the verdict, it never
+ * raises one. A middle or bottom row keeps its third whatever the evidence says.
+ */
+export function finalVerdict(tercile: 'FARM' | 'THIN' | 'SKIP', evidence: 'supported' | 'partial'): 'FARM' | 'THIN' | 'SKIP' {
+  if (tercile === 'FARM' && evidence === 'partial') return 'THIN';
+  return tercile;
 }
 
 /** A farm plan: six dated steps plus the economics they add up to. */
@@ -178,14 +230,16 @@ const money = (n: number): string => `$${Math.round(n)}`;
  * The six steps walk one arc — set up, open, tend weekly, hold, claim, settle up — with
  * a calendar date on the dated steps, a dollar cost on every step, and the whole plan's
  * economics netted in the last step. The verdict arrives with the plan's ratio, never
- * alone: the reader sees the number the word rests on.
+ * alone: the reader sees the number the word rests on. The break-even is the reward
+ * the allocation must be worth to cover the whole cost; no expected payout is
+ * manufactured, because the snapshot carries no allocation evidence.
  */
 export function buildFarmPlan(
   p: Protocol,
   ageDays: number | null,
   asOf: string,
   impliedUsd: number,
-  verdict: 'FARM' | 'THIN' | 'SKIP',
+  tercile: 'FARM' | 'THIN' | 'SKIP',
   efficiency: number,
 ): FarmPlan {
   const chain = p.chains.length > 0 ? p.chains[0]! : 'its main chain';
@@ -194,11 +248,27 @@ export function buildFarmPlan(
   const hold = holdDays(ageDays);
   const weeks = Math.max(1, Math.ceil(hold / 7));
   const weeklyGas = gasTx;
-  const gasTotal = gasTx * (1 + 2 + weeks + 1);
+  const parts = costParts(p, ageDays);
+  const gasTotal = parts.gas_total;
   const hours = roundTo(0.25 + 0.5 + weeks * 0.25 + 0.25 + 0.1, 2);
   const holdEnd = plusDays(asOf, hold);
-  const breakEven = gasTotal;
+  const opportunity = parts.opportunity;
+  const exitFee = parts.exit_fee;
+  const totalCost = parts.total;
+  const breakEven = totalCost;
+  const breakEvenLow = roundTo(0.5 * (gasTotal + exitFee) + opportunity, 2);
+  const breakEvenHigh = roundTo(2 * (gasTotal + exitFee) + opportunity, 2);
   const breakEvenShare = roundTo((breakEven / Math.max(1, impliedUsd)) * 100, 6);
+  const evidence = evidenceStatus(p, ageDays);
+  const verdict = finalVerdict(tercile, evidence);
+  const reason =
+    verdict === 'FARM'
+      ? `top third by implied value per dollar of total cost (${Math.round(efficiency).toLocaleString('en-US')} per $1), break-even $${Math.round(breakEven)} is ${breakEvenShare}% of implied value.`
+      : verdict === 'THIN' && tercile === 'FARM'
+        ? `top third on cost, but the plan's evidence is partial (${ageDays === null ? 'no listing date on record' : 'no chain on record'}), so it farms thin.`
+        : verdict === 'THIN'
+          ? `middle third by implied value per dollar of total cost (${Math.round(efficiency).toLocaleString('en-US')} per $1): worth it only if the chain stays cheap.`
+          : `bottom third by implied value per dollar of total cost (${Math.round(efficiency).toLocaleString('en-US')} per $1): the cost buys too little implied value.`;
   const play = playbookFor(p.category);
   const steps = [
     stepLine(
@@ -223,8 +293,8 @@ export function buildFarmPlan(
       '15 minutes',
     ),
     stepLine(
-      `Settle up: ${money(gasTotal)} of gas all in, ${hours} hours of attention over ${hold} days, break-even if the allocation is worth ${money(breakEven)} (${breakEvenShare}% of the $${Math.round(impliedUsd).toLocaleString('en-US')} implied value), ${Math.round(efficiency).toLocaleString('en-US')} implied dollars per gas dollar. Verdict: ${verdict}.`,
-      `${money(gasTotal)} of gas; the ${money(deposit)} deposit returns on exit`,
+      `Settle up: ${money(totalCost)} total cost (${money(gasTotal)} gas, ${money(opportunity)} forgone yield, ${money(exitFee)} to exit), break-even ${money(breakEven)} (low ${money(breakEvenLow)}, high ${money(breakEvenHigh)}) against ${money(Math.round(impliedUsd))} implied. Verdict: ${verdict}.`,
+      `${money(totalCost)} all in; the ${money(deposit)} deposit returns on exit`,
       `${hours} hours across ${hold} days`,
     ),
   ];
@@ -242,6 +312,13 @@ export function buildFarmPlan(
       break_even_share_pct: breakEvenShare,
       efficiency: Math.round(efficiency),
       verdict,
+      opportunity_cost_usd: opportunity,
+      exit_fee_usd: exitFee,
+      total_cost_usd: totalCost,
+      break_even_low_usd: breakEvenLow,
+      break_even_high_usd: breakEvenHigh,
+      evidence_status: evidence,
+      verdict_reason: reason,
     },
   };
 }
