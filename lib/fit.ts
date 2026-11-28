@@ -1,16 +1,16 @@
 // The value model, fitted — and then tested blind before it is trusted.
 //
-// radar-4 replaces radar-3's hand-set adjustments with a small, fully fitted
-// procedure. The fit is a median (least-absolute-deviation) line in logs —
-// log(market cap) against log(TVL) — because the blind error is a mean absolute
-// log error and the comps carry a few very loud outliers that a least-squares line
-// chases. Two more fitted terms sit on the line: within-category size, how far a
-// protocol's TVL sits from its own category's mean, and shrunk intercept shifts
-// per category and per first chain. Growth and age are fitted too, in the ablation,
-// and dropped: the fitted growth coefficient is unstable across estimators and
-// worsens leave-one-out, and the fitted age coefficient is small and wrecks the
-// chronological test, so the final model carries neither — their factors are 1 and
-// the record says why.
+// radar-5 keeps radar-4's fitted procedure — a median (least-absolute-deviation)
+// line in logs — and changes one thing the blind tests support: the chain shifts
+// are fitted before the category shifts. The fit is a median line because the
+// blind error is a mean absolute log error and the comps carry a few very loud
+// outliers that a least-squares line chases. Two more fitted terms sit on the
+// line: within-category size, how far a protocol's TVL sits from its own
+// category's mean, and shrunk intercept shifts per first chain and per category.
+// Growth and age are fitted too, in the ablation, and dropped: the fitted growth
+// coefficient is unstable across estimators and worsens leave-one-out, and the
+// fitted age coefficient is small and wrecks the chronological test, so the
+// final model carries neither — their factors are 1 and the record says why.
 //
 // Nothing here is tuned to a name: the same fit scores every protocol, and every
 // number the dashboard prints about the model — the coefficients, the test errors,
@@ -262,10 +262,16 @@ export function fitModel(comps: Protocol[], asOf: string, opts: ModelOptions): M
   };
   const residuals = comps.map((p) => Math.log(p.mcap_usd!) - modelLogValue(fitted, p, asOf));
   if (opts.shifts) {
-    fitted.shifts = shiftsFromResiduals(comps, residuals, (p) => shiftKey(p.category));
+    // radar-5 fits the chain shifts first and the category shifts on what is left:
+    // on this snapshot that order beats the reverse on both blind tests (see the
+    // decisions in validateModel), so the chain's share of the residual is priced
+    // before the category's.
     if (opts.chain) {
-      const afterCat = residuals.map((r, i) => r - (fitted.shifts[shiftKey(comps[i]!.category)]?.shift ?? 0));
-      fitted.chain_shifts = shiftsFromResiduals(comps, afterCat, chainKey);
+      fitted.chain_shifts = shiftsFromResiduals(comps, residuals, chainKey);
+      const afterChain = residuals.map((r, i) => r - (fitted.chain_shifts[chainKey(comps[i]!)]?.shift ?? 0));
+      fitted.shifts = shiftsFromResiduals(comps, afterChain, (p) => shiftKey(p.category));
+    } else {
+      fitted.shifts = shiftsFromResiduals(comps, residuals, (p) => shiftKey(p.category));
     }
   }
   return fitted;
@@ -533,7 +539,7 @@ export function validateModel(comps: Protocol[], asOf: string): Validation {
     `Within-category size kept (coefficient ${fit.w_coef}): it moves the walk-forward error from ${f(walk.line_category)} to ${f(walk.line_category_size)} while the leave-one-out error stays at ${f(loo.line_category_size)}.`,
   );
   decisions.push(
-    `Chain shifts kept: shrunk n / (n + 4) on the first chain, they move the leave-one-out error from ${f(loo.line_category_size)} to ${f(loo.final)} and the walk-forward error from ${f(walk.line_category_size)} to ${f(walk.final)}.`,
+    `Chain shifts kept, fitted before the category shifts: shrunk n / (n + 4) on the first chain, they move the leave-one-out error from ${f(loo.line_category_size)} to ${f(loo.final)} and the walk-forward error from ${f(walk.line_category_size)} to ${f(walk.final)}. Fitting the category shifts first and the chain shifts on what is left — radar-4's order — was retested and loses on both tests, so radar-5 prices the chain's share of the residual first.`,
   );
   decisions.push(
     `Growth fitted and dropped (coefficient ${grown.growth_coef}): adding it moves the leave-one-out error from ${f(loo.final)} to ${f(loo.final_growth)} — worse — while the walk-forward error improves to ${f(walk.final_growth)}. A term stays only when it improves both blind tests, so growth stays out; the hand-set full-weight multiplier is gone either way.`,

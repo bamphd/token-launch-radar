@@ -1,8 +1,9 @@
-// Token launch radar, model radar-4: one run reads the frozen snapshot, fits the value
-// curve, tests it blind, ranks the launch candidates, costs their farm plans, and lays
-// out the board, the dashboard, and the dossier the judge reads. The same snapshot in
-// always produces the same bytes out: no clock, no network, no randomness but the
-// bootstrap's fixed seed.
+// Token launch radar, model radar-5: one run reads the frozen snapshot, fits the value
+// curve, tests it blind, prices peer token-recorded odds and tests those blind too,
+// ranks the launch candidates into named lanes, costs their farm plans by net value
+// per hour, and lays out the board, the dashboard, and the dossier the judge reads.
+// The same snapshot in always produces the same bytes out: no clock, no network, no
+// randomness but the bootstrap's fixed seed.
 //
 //   node main.ts --input <snapshot.json|directory> --output <dir>
 //
@@ -123,9 +124,11 @@ function main(): void {
   const bottom = rows[rows.length - 1]!;
   console.log(
     [
-      `radar-4: ${snapshot.protocols.length} protocols, ${rows.length} rows, watchlist ${payload.coverage.watchlist_covered}/${payload.coverage.watchlist_size}`,
+      `radar-5: ${snapshot.protocols.length} protocols, ${rows.length} rows, watchlist ${payload.coverage.watchlist_covered}/${payload.coverage.watchlist_size}`,
+      `lanes: watchlist ${payload.coverage.lanes.watchlist}, early ${payload.coverage.lanes.early}, token-live ${payload.coverage.lanes['token-live']}, set-aside ${payload.coverage.lanes['set-aside']} (sum ${payload.coverage.lanes.watchlist + payload.coverage.lanes.early + payload.coverage.lanes['token-live'] + payload.coverage.lanes['set-aside']})`,
       `top ${top.slug} $${top.implied_value_usd.toLocaleString('en-US')}, bottom ${bottom.slug} $${bottom.implied_value_usd.toLocaleString('en-US')}`,
       `fit: intercept ${payload.fit.intercept}, slope ${payload.fit.slope}, size ${payload.fit.w_coef}, ${payload.fit.comp_count} comps; leave-one-out ${payload.validation.loo.final} vs flat ${payload.validation.loo.flat_median}; walk-forward ${payload.validation.walk_forward.final} vs flat ${payload.validation.walk_forward.flat}`,
+      `odds: base rate ${payload.odds_validation.base_rate}; hierarchy kept: ${payload.odds_validation.hierarchy_kept}; loo logloss hierarchy ${payload.odds_validation.loo.hierarchy.log_loss} vs age-only ${payload.odds_validation.loo.age_only.log_loss}; chrono pooled ${payload.odds_validation.chrono_pooled.hierarchy.log_loss} vs ${payload.odds_validation.chrono_pooled.age_only.log_loss}`,
       `dossier: ${dossier.length} bytes, text ${textBytes} of ${TEXT_CAP_BYTES} bytes`,
     ].join('\n'),
   );

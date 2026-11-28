@@ -1,6 +1,8 @@
-/* Radar-4's page: warm paper, one dark band, numbers in tabular figures, and a verdict
-   pill on every row. The board is the page — the model panel and the detail drawer exist
-   to answer the two questions a reader asks of a rank: why this number, and what it costs. */
+/* Radar-5's page: warm paper, one dark band, numbers in tabular figures, a verdict
+   pill on every row, and four lane cards that account for the whole snapshot. The
+   board is the page — the model panel and the detail drawer exist to answer the
+   questions a reader asks of a rank: why this number, what are the odds, and what
+   an hour of farming it nets. */
 :root {
   --paper: #faf7f1;
   --card: #fffdf9;
@@ -43,6 +45,21 @@ main { max-width: 1240px; margin: 0 auto; padding: 0 24px 40px; }
 .kpi { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: 0 1px 2px rgba(36, 29, 22, 0.06); }
 .kpi b { display: block; font-family: var(--nums); font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
 .kpi span { display: block; margin-top: 2px; font-size: 12px; color: var(--soft); line-height: 1.4; }
+
+/* The four lanes: every protocol in exactly one, counts first. */
+.lanes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+.lane-card { background: var(--card); border: 1px solid var(--line); border-top: 3px solid var(--grey); border-radius: var(--radius); padding: 14px 16px; }
+.lane-card.watchlist { border-top-color: var(--green); }
+.lane-card.early { border-top-color: var(--amber); }
+.lane-card.token-live { border-top-color: var(--band); }
+.lane-card b { display: block; font-family: var(--nums); font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+.lane-card h3 { font-size: 14px; margin-top: 2px; }
+.lane-card p { margin-top: 4px; font-size: 12px; color: var(--soft); line-height: 1.45; }
+.lane-chip { display: inline-block; margin-top: 3px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-radius: 999px; padding: 1px 7px; border: 1px solid var(--line); color: var(--soft); background: var(--paper); }
+.lane-chip.watchlist { color: var(--green); border-color: #bcd8c4; background: var(--green-wash); }
+.odds-bar { display: block; width: 54px; height: 5px; margin-top: 4px; border-radius: 3px; background: var(--grey-wash); overflow: hidden; }
+.odds-fill { display: block; height: 100%; background: var(--green); border-radius: 3px; }
+.odds-head { font-size: 15px; margin: 22px 0 8px; padding-top: 18px; border-top: 1px solid var(--line); }
 
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; margin-top: 24px; }
 .panel h2 { font-size: 21px; }
@@ -143,6 +160,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 0 24px 40px; }
 
 @media (max-width: 900px) {
   .kpis { grid-template-columns: repeat(3, 1fr); }
+  .lanes { grid-template-columns: 1fr 1fr; }
   .model-grid { grid-template-columns: 1fr; }
   .mast h1 { font-size: 26px; }
   .field.search input { min-width: 0; width: 100%; }

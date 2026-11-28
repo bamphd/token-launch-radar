@@ -13,8 +13,10 @@
 
 import { FINAL_MODEL_OPTS, RATIO_HIGH, RATIO_LOW, bootstrapRanges, fitModel, modelLogValue, priceProtocol, selectComps, validateModel } from './fit.ts';
 import type { ModelFit, Validation } from './fit.ts';
-import { buildFarmPlan, GAS_PER_TX, kinFor, totalCostFor, verdictCuts, verdictFor } from './farm.ts';
+import { buildFarmPlan, GAS_PER_TX, kinFor, planHours, totalCostFor, verdictCuts, verdictFor } from './farm.ts';
 import type { FarmEconomics, Kin } from './farm.ts';
+import { publishedOdds, validateOdds } from './odds.ts';
+import type { OddsEvidence, OddsValidation } from './odds.ts';
 import { medianOf, roundTo } from './snapshot.ts';
 import type { Protocol, SnapshotDoc } from './snapshot.ts';
 
@@ -83,23 +85,19 @@ export function exclusionReason(p: Protocol): string {
 }
 
 /**
- * One row's peer evidence: the comparable protocols — same category, TVL within two
- * log units — and how many of them already trade. The smoothed share is a snapshot
- * fact about the peer group, never a launch probability: the snapshot carries no
- * dated launch outcomes, so no horizon-specific odds are claimed.
+ * The four lanes every protocol in the snapshot lands in, exactly one each:
+ * watchlist (ranked, on the snapshot's watchlist), early (ranked, below the
+ * watchlist floor or off its list), token-live (already records a token; priced
+ * as the model's comps, never ranked as a launch), and set-aside (pre-token but
+ * not a launch candidate, with the reason named).
  */
-export function peersFor(p: Protocol, protocols: Protocol[]): PeerEvidence {
-  const target = Math.log(p.tvl_usd);
-  let n = 0;
-  let traded = 0;
-  for (const q of protocols) {
-    if (q.slug === p.slug) continue;
-    if (q.category !== p.category) continue;
-    if (Math.abs(Math.log(q.tvl_usd) - target) > 2) continue;
-    n++;
-    if (isTrading(q)) traded++;
-  }
-  return { n, traded, prevalence: roundTo((traded + 1) / (n + 2), 3) };
+export type Lane = 'watchlist' | 'early' | 'token-live' | 'set-aside';
+
+/** One protocol's lane. Trading wins first; a ranked candidate splits on the watchlist; the rest are set aside. */
+export function laneFor(p: Protocol, watchlist: Set<string>): Lane {
+  if (isTrading(p)) return 'token-live';
+  if (isLaunchCandidate(p)) return watchlist.has(p.slug) ? 'watchlist' : 'early';
+  return 'set-aside';
 }
 
 /** One board row: the gate fields plus the audit trail the dashboard and the report read. */
@@ -135,17 +133,12 @@ export interface BoardRow {
   farm_steps: string[];
   farm: FarmEconomics;
   kin: Kin[];
-  peers: PeerEvidence;
-}
-
-/** One row's peer evidence: how many comparable protocols already trade. */
-export interface PeerEvidence {
-  /** Comparable protocols: same category, TVL within two log units. */
-  n: number;
-  /** Of those, how many already trade. */
-  traded: number;
-  /** Smoothed share already trading, (traded + 1) / (n + 2): a snapshot share, not a launch probability. */
-  prevalence: number;
+  /** The lane this row sits in: watchlist or early (ranked rows only). */
+  lane: Lane;
+  /** Peer token-recorded odds and the counts behind them (lib/odds.ts). */
+  odds: OddsEvidence;
+  /** Implied value times the published odds: a peer-implied expectation, not a payout forecast. */
+  expected_value_usd: number;
 }
 
 /** A traded anchor for the dashboard's live tab: a market cap the curve learned from. */
@@ -159,7 +152,7 @@ export interface LiveAnchor {
   ratio: number;
 }
 
-/** The coverage reconciliation: every protocol in the snapshot accounted for, in one of three buckets. */
+/** The coverage reconciliation: every protocol in the snapshot accounted for, in one of four lanes. */
 export interface Coverage {
   total: number;
   ranked: number;
@@ -168,6 +161,17 @@ export interface Coverage {
   watchlist_size: number;
   watchlist_covered: number;
   excluded_by_reason: Record<string, number>;
+  /** Lane counts; the four always sum to the snapshot's protocol count. */
+  lanes: Record<Lane, number>;
+}
+
+/** A set-aside protocol and the reason it is not ranked, for the dashboard's lane view. */
+export interface SetAsideRow {
+  slug: string;
+  name: string;
+  category: string | null;
+  tvl_usd: number;
+  reason: string;
 }
 
 /** One row of the dashboard's calibration table: a category's shift, and what it prices $100M of TVL at. */
@@ -196,6 +200,7 @@ export interface RadarPayload {
     calibration: CalibrationRow[];
   };
   validation: Validation;
+  odds_validation: OddsValidation;
   coverage: Coverage;
   economy: {
     deposit_tiers: Array<[number, number]>;
@@ -207,6 +212,7 @@ export interface RadarPayload {
   methodology: string[];
   rows: BoardRow[];
   live: LiveAnchor[];
+  set_aside: SetAsideRow[];
 }
 
 /** The fitted model's multiple at a TVL, for the calibration table. */
@@ -234,23 +240,34 @@ export function assembleBoard(snapshot: SnapshotDoc): { rows: BoardRow[]; payloa
   const comps = selectComps(snapshot.protocols);
   const fit = fitModel(comps, asOf, FINAL_MODEL_OPTS);
   const validation = validateModel(comps, asOf);
+  const oddsValidation = validateOdds(snapshot.protocols, asOf);
   const candidates = snapshot.protocols.filter(isLaunchCandidate);
   const ranges = bootstrapRanges(candidates, comps, asOf);
   const priced = candidates.map((p) => ({ p, priced: priceProtocol(fit, p, asOf) }));
   priced.sort((a, b) => b.priced.value_usd - a.priced.value_usd || (a.p.slug < b.p.slug ? -1 : 1));
 
-  // The verdict line is drawn from the board's own efficiencies — implied value per
-  // dollar of TOTAL farm cost, gas plus forgone yield plus the exit transaction — so
-  // plans are costed in a first pass before the verdicts — and the steps — are written.
-  const efficiencies = priced.map(({ p, priced: pr }) => {
-    return pr.value_usd / totalCostFor(p, pr.age_days);
+  // Each candidate's peer token-recorded odds, from lib/odds.ts: the hierarchy's
+  // rate when it passed both blind tests, else the age-only rate. Expected value
+  // is implied value times those odds — a peer-implied expectation for ranking
+  // farm effort, never a payout forecast.
+  const oddsBySlug = new Map<string, OddsEvidence>();
+  for (const { p } of priced) oddsBySlug.set(p.slug, publishedOdds(snapshot.protocols, p, asOf, oddsValidation.hierarchy_kept));
+
+  // The verdict line is drawn from the board's own net-per-hour figures —
+  // (expected value - total farm cost) / hours of attention — so plans are costed
+  // in a first pass before the verdicts — and the steps — are written.
+  const netPerHours = priced.map(({ p, priced: pr }) => {
+    const ev = pr.value_usd * oddsBySlug.get(p.slug)!.odds;
+    return (ev - totalCostFor(p, pr.age_days)) / planHours(pr.age_days);
   });
-  const cuts = verdictCuts(efficiencies);
+  const cuts = verdictCuts(netPerHours);
 
   const rows: BoardRow[] = priced.map(({ p, priced: pr }, i) => {
-    const eff = efficiencies[i]!;
-    const verdict = verdictFor(eff, cuts);
-    const plan = buildFarmPlan(p, pr.age_days, asOf, pr.value_usd, verdict, eff);
+    const odds = oddsBySlug.get(p.slug)!;
+    const expected = pr.value_usd * odds.odds;
+    const eff = expected / totalCostFor(p, pr.age_days);
+    const verdict = verdictFor(netPerHours[i]!, cuts);
+    const plan = buildFarmPlan(p, pr.age_days, asOf, pr.value_usd, expected, verdict, eff);
     const range = ranges.get(p.slug)!;
     return {
       rank: i + 1,
@@ -284,7 +301,9 @@ export function assembleBoard(snapshot: SnapshotDoc): { rows: BoardRow[]; payloa
       farm_steps: plan.steps,
       farm: plan.economics,
       kin: kinFor(p, comps),
-      peers: peersFor(p, snapshot.protocols),
+      lane: laneFor(p, new Set(snapshot.watchlist)),
+      odds,
+      expected_value_usd: Math.round(expected),
     };
   });
 
@@ -297,6 +316,16 @@ export function assembleBoard(snapshot: SnapshotDoc): { rows: BoardRow[]; payloa
     if (reason !== 'ranked') excludedByReason[reason] = (excludedByReason[reason] ?? 0) + 1;
   }
   const tradedCount = snapshot.protocols.filter(isTrading).length;
+  const lanes: Record<Lane, number> = { watchlist: 0, early: 0, 'token-live': 0, 'set-aside': 0 };
+  for (const p of snapshot.protocols) lanes[laneFor(p, watchlistSet)]++;
+  const laneTotal = lanes.watchlist + lanes.early + lanes['token-live'] + lanes['set-aside'];
+  if (laneTotal !== snapshot.protocols.length) {
+    throw new Error(`lane accounting broke: ${laneTotal} of ${snapshot.protocols.length} protocols placed`);
+  }
+  const setAside: SetAsideRow[] = snapshot.protocols
+    .filter((p) => laneFor(p, watchlistSet) === 'set-aside')
+    .map((p) => ({ slug: p.slug, name: p.name, category: p.category, tvl_usd: p.tvl_usd, reason: exclusionReason(p) }))
+    .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : 1));
   const coverage: Coverage = {
     total: snapshot.protocols.length,
     ranked: rows.length,
@@ -305,6 +334,7 @@ export function assembleBoard(snapshot: SnapshotDoc): { rows: BoardRow[]; payloa
     watchlist_size: snapshot.watchlist.length,
     watchlist_covered: watchlistCovered,
     excluded_by_reason: Object.fromEntries(Object.entries(excludedByReason).sort(([a], [b]) => (a < b ? -1 : 1))),
+    lanes,
   };
 
   const calibration: CalibrationRow[] = Object.entries(fit.shifts)
@@ -329,11 +359,11 @@ export function assembleBoard(snapshot: SnapshotDoc): { rows: BoardRow[]; payloa
   for (const r of rows) verdictCounts[r.farm.verdict]++;
 
   const methodology: string[] = [
-    `The snapshot's ${comps.length} trading protocols price the model: each votes with its market cap and its TVL. A median line in logs — one slope for every protocol — prices each launch candidate's TVL, adjusted by within-category size, a shrunk intercept shift per category, and a shrunk shift per first chain. ${ratioExcluded} trading protocols sit the fit out because their market-cap / TVL ratio falls outside 0.01..10.`,
-    `The model was tested before it was trusted, twice: leave-one-out error ${validation.loo.final} log points against ${validation.loo.flat_median} for a flat median multiple, and a walk-forward error of ${validation.walk_forward.final} against ${validation.walk_forward.flat} on the newest comps. Growth and age were fitted in the ablation and dropped — growth worsens leave-one-out, age wrecks the chronological test — so neither moves a value. Rank ranges come from ${validation.refits} bootstrap refits of the model, seed ${validation.seed}.`,
-    `A launch candidate is a protocol with no token on record, in a launchable category, named like a protocol: wrapped and staked products, versioned names, bridge and restaking categories, and exchange names are set aside, the same rule the snapshot's watchlist uses. ${coverage.ranked} protocols rank; ${coverage.excluded_pre_token} pre-token protocols are set aside; ${coverage.traded} trade already.`,
-    `Every row carries its peer evidence: the comparable protocols in its category near its TVL, and the smoothed share of them already trading — a snapshot share, never a launch probability.`,
-    `Every row's farm plan is dated from the snapshot and netted: gas, forgone yield on the deposit at 5% a year, and the exit transaction, against the break-even allocation the reward must clear — low, base, and high gas cases shown. The FARM, THIN, or SKIP verdict splits the board into thirds by implied value per dollar of total cost, except a top-third row whose evidence is partial farms thin instead. Deposits are capital at work, not fees, and return on exit.`,
+    `The snapshot's ${comps.length} trading protocols price the model: each votes with its market cap and its TVL. A median line in logs — one slope for every protocol — prices each launch candidate's TVL, adjusted by within-category size, a shrunk intercept shift per first chain, and a shrunk shift per category. ${ratioExcluded} trading protocols sit the fit out because their market-cap / TVL ratio falls outside 0.01..10.`,
+    `The model was tested before it was trusted, twice: leave-one-out error ${validation.loo.final} log points against ${validation.loo.flat_median} for a flat median multiple, and a walk-forward error of ${validation.walk_forward.final} against ${validation.walk_forward.flat} on the newest comps. Growth and age were fitted in the ablation and dropped — growth worsens leave-one-out, age wrecks the chronological test — so neither moves a value. The specification was chosen after these tests, so the gates are evidence, not untouched proof. Rank ranges come from ${validation.refits} bootstrap refits of the model, seed ${validation.seed}.`,
+    `Every one of the ${coverage.total} protocols sits in exactly one of four lanes: ${lanes.watchlist} watchlist (ranked, on the snapshot's watchlist), ${lanes.early} early (ranked, below the $50M floor or off the watchlist), ${lanes['token-live']} token-live (already record a token; they price the model as comps and are never ranked as launches), and ${lanes['set-aside']} set aside (pre-token but not a launch candidate, each with its reason named). The lane counts sum to ${coverage.total}; the program refuses to finish if they do not.`,
+    `Each ranked row carries peer token-recorded odds: how often comparable protocols — same age band, category, and TVL band — already record a token in this snapshot, smoothed through a fixed hierarchy (global, age, category, size; prior strengths 20, 12, 8) and tested leave-one-out and on two chronological splits against an age-only rate. ${oddsValidation.decision} The published rate is a peer-recorded rate in this snapshot, not a forecast that this protocol launches, and expected value (implied value times the odds) is a peer-implied expectation for ranking farm effort, never a payout promise.`,
+    `Every row's farm plan is dated from the snapshot and netted: gas, forgone yield on the deposit at 5% a year, and the exit transaction, against the break-even allocation the reward must clear — low, base, and high gas cases shown, plus net-per-hour at $0, $50, $250, and $1,000 gross-reward scenarios. The FARM, THIN, or SKIP verdict splits the board into thirds by net expected value per hour of attention, except a top-third row whose evidence is partial farms thin instead. Deposits are capital at work, not fees, and return on exit.`,
     `No protocol name is hardcoded anywhere in the model: the same fit, the same rule, and the same playbook score every row, and two runs of the program on the same snapshot are byte-identical.`,
   ];
 
@@ -356,9 +386,10 @@ export function assembleBoard(snapshot: SnapshotDoc): { rows: BoardRow[]; payloa
     as_of: asOf,
     source: snapshot.source,
     floor_usd: snapshot.floor_usd,
-    model_version: 'radar-4',
+    model_version: 'radar-5',
     fit: { intercept: fit.intercept, slope: fit.slope, w_coef: fit.w_coef, growth_coef: fit.growth_coef, age_coef: fit.age_coef, comp_count: comps.length, global_median: globalMedian, ratio_excluded: ratioExcluded, calibration },
     validation,
+    odds_validation: oddsValidation,
     coverage,
     economy: {
       deposit_tiers: [
@@ -374,6 +405,7 @@ export function assembleBoard(snapshot: SnapshotDoc): { rows: BoardRow[]; payloa
     methodology,
     rows,
     live,
+    set_aside: setAside,
   };
 
   return { rows, payload, report: renderReport(snapshot, payload, fit, comps) };
@@ -405,10 +437,14 @@ export function boardIssue(rows: BoardRow[], snapshot: SnapshotDoc): string | nu
     if (!seen.has(slug)) return `watchlist slug ${slug} is missing from the board`;
   }
   const bySlug = new Map(snapshot.protocols.map((p) => [p.slug, p]));
+  const watchlistSet = new Set(snapshot.watchlist);
   for (const r of rows) {
     const p = bySlug.get(r.slug);
     if (p === undefined) return `row ${r.slug} is not in the snapshot`;
     if (!isLaunchCandidate(p)) return `row ${r.slug} is not a launch candidate`;
+    if (r.lane !== laneFor(p, watchlistSet)) return `row ${r.slug} sits in lane ${r.lane}, not ${laneFor(p, watchlistSet)}`;
+    if (!(r.odds.odds > 0 && r.odds.odds < 1)) return `row ${r.slug} has peer odds outside (0, 1)`;
+    if (r.expected_value_usd !== Math.round(r.implied_value_usd * r.odds.odds)) return `row ${r.slug} expected value does not recompute`;
   }
   return null;
 }
@@ -426,14 +462,14 @@ function renderReport(snapshot: SnapshotDoc, payload: RadarPayload, fit: ModelFi
   lines.push('# Token launch radar — model record');
   lines.push('');
   lines.push(
-    `Snapshot ${snapshot.as_of}, ${snapshot.protocols.length} protocols, watchlist ${snapshot.watchlist.length}, floor ${moneyFull(snapshot.floor_usd)}. Model radar-4, fitted from the snapshot's own trading protocols.`,
+    `Snapshot ${snapshot.as_of}, ${snapshot.protocols.length} protocols, watchlist ${snapshot.watchlist.length}, floor ${moneyFull(snapshot.floor_usd)}. Model radar-5, fitted from the snapshot's own trading protocols.`,
   );
   lines.push('');
   lines.push('## The fitted model');
   lines.push('');
   lines.push('The comps are the trading protocols with a market-cap / TVL ratio inside 0.01..10, exchanges excluded:');
   lines.push('');
-  lines.push(`- ${comps.length} comps. The model is a median (least-absolute-deviation) line in logs: log(market cap) = ${fit.intercept} + ${fit.slope} x log(TVL) + ${fit.w_coef} x within-category size, plus a per-category intercept shift and a per-first-chain shift, each shrunk by n / (n + 4).`);
+  lines.push(`- ${comps.length} comps. The model is a median (least-absolute-deviation) line in logs: log(market cap) = ${fit.intercept} + ${fit.slope} x log(TVL) + ${fit.w_coef} x within-category size, plus a per-first-chain intercept shift and a per-category shift, each shrunk by n / (n + 4), chain fitted first.`);
   lines.push(`- Within-category size is a protocol's log TVL minus its own category's mean log TVL: a protocol bigger than its category's middle prices higher than the shared line alone says.`);
   lines.push(`- The global median multiple is x${payload.fit.global_median}; the model replaces it, because the blind tests say the model predicts better.`);
   lines.push(`- Growth fitted at ${fit.growth_coef} and age fitted at ${fit.age_coef} in the ablation — both dropped from the final model, because neither improves both blind tests. Implied value = exp(model), rounded to whole dollars; no hand-set multiplier remains.`);
@@ -484,20 +520,30 @@ function renderReport(snapshot: SnapshotDoc, payload: RadarPayload, fit: ModelFi
   lines.push('## Coverage reconciliation');
   lines.push('');
   const cov = payload.coverage;
-  lines.push(`- ${cov.total} protocols in the snapshot: ${cov.ranked} ranked, ${cov.excluded_pre_token} pre-token protocols set aside, ${cov.traded} trading already.`);
+  lines.push(`- ${cov.total} protocols in the snapshot, each in exactly one lane: ${cov.lanes.watchlist} watchlist, ${cov.lanes.early} early, ${cov.lanes['token-live']} token-live, ${cov.lanes['set-aside']} set aside. The counts sum to ${cov.total}; the program refuses to finish otherwise.`);
+  lines.push(`- ${cov.ranked} ranked (${cov.lanes.watchlist} watchlist + ${cov.lanes.early} early), ${cov.excluded_pre_token} pre-token protocols set aside, ${cov.traded} trading already.`);
   for (const [reason, n] of Object.entries(cov.excluded_by_reason).sort(([a], [b]) => (a < b ? -1 : 1))) {
     lines.push(`- ${n} set aside as ${reason}.`);
   }
   lines.push(`- Watchlist: ${cov.watchlist_covered} of ${cov.watchlist_size} covered.`);
+  lines.push('');
+  lines.push('## Peer token-recorded odds');
+  lines.push('');
+  const ov = payload.odds_validation;
+  lines.push(`- Outcome: a positive market cap on record. Base rate ${ov.base_rate} across ${cov.total} protocols. The estimator is a fixed hierarchy — global (s+1)/(n+2), age band toward global at strength 20, category toward age at 12, TVL band toward category at 8 — with age bands 0-89 / 90-364 / 365-1094 / 1095+ days and TVL bands under $10M / $10M-$50M / $50M-$250M / $250M+. No band or strength was swept.`);
+  lines.push(`- Leave-one-out (n=${ov.loo.n}): hierarchy log loss ${ov.loo.hierarchy.log_loss}, Brier ${ov.loo.hierarchy.brier}; age-only ${ov.loo.age_only.log_loss} / ${ov.loo.age_only.brier}; global ${ov.loo.global.log_loss} / ${ov.loo.global.brier}.`);
+  lines.push(`- Chronological, pooled 60/20 + 80/20 (n=${ov.chrono_pooled.n} of ${ov.dated_n} dated; ${ov.undated_n} undated excluded): hierarchy ${ov.chrono_pooled.hierarchy.log_loss} / ${ov.chrono_pooled.hierarchy.brier}; age-only ${ov.chrono_pooled.age_only.log_loss} / ${ov.chrono_pooled.age_only.brier}; global ${ov.chrono_pooled.global.log_loss} / ${ov.chrono_pooled.global.brier}.`);
+  lines.push(`- ${ov.decision}`);
+  lines.push('- The published rate is how often comparable protocols already record a token in this snapshot. It is not a probability that a given protocol launches, and the chronological split tests generalization across listing cohorts on present-day figures, not a historical backtest.');
   lines.push('');
   lines.push('## Farm economics');
   lines.push('');
   lines.push('- Deposits: $250 at $1B+ TVL, $150 at $100M+, $100 at $25M+, $50 below that. Capital at work, not a fee.');
   lines.push('- Gas per transaction, planning estimates: ' + Object.entries(payload.economy.gas_per_tx).map(([c, g]) => `${c} $${g}`).join(', ') + `; other chains $${payload.economy.gas_default}.`);
   lines.push('- Hold windows: 60 days under 180 days old, 45 days under a year, 30 days older, 45 when the listing date is unknown.');
-  lines.push('- Total cost adds the forgone yield on the deposit (5% a year over the hold) and one exit transaction to the gas. Break-even is the allocation the reward must be worth to cover the whole cost, shown at half, base, and double gas prices; no expected payout is manufactured, because the snapshot carries no allocation evidence.');
+  lines.push('- Total cost adds the forgone yield on the deposit (5% a year over the hold) and one exit transaction to the gas. Break-even is the allocation the reward must be worth to cover the whole cost, shown at half, base, and double gas prices; net per hour is shown at $0, $50, $250, and $1,000 gross-reward scenarios, and expected value (implied value times the published peer odds) is a peer-implied expectation, never a promised payout.');
   lines.push(
-    `- Verdicts split the board into thirds by implied value per dollar of total cost: FARM at or above ${payload.economy.verdict_cuts.farm_above.toLocaleString('en-US')}, SKIP below ${payload.economy.verdict_cuts.skip_below.toLocaleString('en-US')}. A top-third row whose evidence is partial (no listing date or no chain on record) farms thin instead. Counts: FARM ${payload.economy.verdict_counts.FARM}, THIN ${payload.economy.verdict_counts.THIN}, SKIP ${payload.economy.verdict_counts.SKIP}.`,
+    `- Verdicts split the board into thirds by net expected value per hour of attention: FARM at or above $${payload.economy.verdict_cuts.farm_above.toLocaleString('en-US')}/h, SKIP below $${payload.economy.verdict_cuts.skip_below.toLocaleString('en-US')}/h. A top-third row whose evidence is partial (no listing date or no chain on record) farms thin instead. Counts: FARM ${payload.economy.verdict_counts.FARM}, THIN ${payload.economy.verdict_counts.THIN}, SKIP ${payload.economy.verdict_counts.SKIP}.`,
   );
   lines.push('');
   lines.push('## Rank ranges');
@@ -509,17 +555,17 @@ function renderReport(snapshot: SnapshotDoc, payload: RadarPayload, fit: ModelFi
   lines.push('');
   lines.push('## Top 40');
   lines.push('');
-  lines.push('| rank | protocol | TVL | implied | range | verdict |');
-  lines.push('|---|---|---|---|---|---|');
+  lines.push('| rank | protocol | lane | TVL | implied | odds | expected | net/h | range | verdict |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|');
   for (const r of payload.rows.slice(0, 40)) {
-    lines.push(`| ${r.rank} | ${r.name} | ${moneyShort(r.tvl_usd)} | ${moneyFull(r.implied_value_usd)} | ${r.rank_low}–${r.rank_high} | ${r.farm.verdict} |`);
+    lines.push(`| ${r.rank} | ${r.name} | ${r.lane} | ${moneyShort(r.tvl_usd)} | ${moneyFull(r.implied_value_usd)} | ${Math.round(r.odds.odds * 100)}% | ${moneyFull(r.expected_value_usd)} | $${r.farm.net_per_hour_usd.toLocaleString('en-US')} | ${r.rank_low}–${r.rank_high} | ${r.farm.verdict} |`);
   }
   lines.push('');
   const first = payload.rows[0]!;
   lines.push('## Worked example: the top row, end to end');
   lines.push('');
   lines.push(
-    `${first.name} holds ${moneyFull(first.tvl_usd)} of TVL in ${first.category ?? 'an uncategorised bucket'}, ${first.change_7d === null ? 'with no seven-day change on record' : `with a seven-day change of ${first.change_7d}%`}, ${first.age_days === null ? 'with no listing date on record' : `listed ${first.age_days} days before the snapshot`}. The model prices its TVL at ${moneyFull(first.curve_usd)} (category shift ${first.category_shift}, ${first.category_shift_n} comp${first.category_shift_n === 1 ? '' : 's'}; chain shift ${first.chain_shift}, ${first.chain_shift_n} comp${first.chain_shift_n === 1 ? '' : 's'}; within-category size ${first.within_size}), and the implied value is ${moneyFull(first.implied_value_usd)}, with rank range ${first.rank_low}–${first.rank_high} across the refits. ${first.peers.n} comparable protocols sit near its TVL and ${first.peers.traded} of them already trade (smoothed share ${Math.round(first.peers.prevalence * 100)}%). Growth and age move nothing: both were fitted and dropped. Its farm plan, verbatim:`,
+    `${first.name} holds ${moneyFull(first.tvl_usd)} of TVL in ${first.category ?? 'an uncategorised bucket'}, ${first.change_7d === null ? 'with no seven-day change on record' : `with a seven-day change of ${first.change_7d}%`}, ${first.age_days === null ? 'with no listing date on record' : `listed ${first.age_days} days before the snapshot`}. The model prices its TVL at ${moneyFull(first.curve_usd)} (category shift ${first.category_shift}, ${first.category_shift_n} comp${first.category_shift_n === 1 ? '' : 's'}; chain shift ${first.chain_shift}, ${first.chain_shift_n} comp${first.chain_shift_n === 1 ? '' : 's'}; within-category size ${first.within_size}), and the implied value is ${moneyFull(first.implied_value_usd)}, with rank range ${first.rank_low}–${first.rank_high} across the refits. Its closest peers — same age band (${first.odds.age_band}), category, and TVL band (${first.odds.tvl_band}) — record a token ${first.odds.closest.recorded} of ${first.odds.closest.n} times; the published peer odds are ${Math.round(first.odds.odds * 100)}%, so the peer-implied expected value is ${moneyFull(first.expected_value_usd)}. Growth and age move nothing: both were fitted and dropped. Its farm plan, verbatim:`,
   );
   lines.push('');
   for (let i = 0; i < first.farm_steps.length; i++) {
@@ -527,14 +573,15 @@ function renderReport(snapshot: SnapshotDoc, payload: RadarPayload, fit: ModelFi
   }
   lines.push('');
   lines.push(
-    `Netted: ${moneyFull(first.farm.total_cost_usd)} total cost (${moneyFull(first.farm.gas_usd)} gas, ${moneyFull(first.farm.opportunity_cost_usd)} forgone yield, ${moneyFull(first.farm.exit_fee_usd)} to exit), a ${moneyFull(first.farm.deposit_usd)} deposit that returns on exit, ${first.farm.hours} hours across ${first.farm.hold_days} days, break-even at ${moneyFull(first.farm.break_even_usd)} (low ${moneyFull(first.farm.break_even_low_usd)}, high ${moneyFull(first.farm.break_even_high_usd)}, ${first.farm.break_even_share_pct}% of implied value), ${first.farm.efficiency.toLocaleString('en-US')} implied dollars per dollar of total cost. Evidence: ${first.farm.evidence_status}. Verdict: ${first.farm.verdict} — ${first.farm.verdict_reason}`,
+    `Netted: ${moneyFull(first.farm.total_cost_usd)} total cost (${moneyFull(first.farm.gas_usd)} gas, ${moneyFull(first.farm.opportunity_cost_usd)} forgone yield, ${moneyFull(first.farm.exit_fee_usd)} to exit), a ${moneyFull(first.farm.deposit_usd)} deposit that returns on exit, ${first.farm.hours} hours across ${first.farm.hold_days} days, break-even at ${moneyFull(first.farm.break_even_usd)} (low ${moneyFull(first.farm.break_even_low_usd)}, high ${moneyFull(first.farm.break_even_high_usd)}, ${first.farm.break_even_share_pct}% of implied value), ${moneyFull(first.farm.net_per_hour_usd)} net expected value per hour. Evidence: ${first.farm.evidence_status}. Verdict: ${first.farm.verdict} — ${first.farm.verdict_reason}`,
   );
   lines.push('');
   lines.push('## Limits');
   lines.push('');
   lines.push('- The model is a cross-section, not a launch guarantee: a launch may price far from its fitted value, and the rank ranges carry that uncertainty.');
   lines.push('- The chronological test has only 24 observations; treat its point estimate as indicative, not precise. The leave-one-out test is the tighter evidence.');
-  lines.push('- Peer prevalence is the share of comparable protocols already trading, not a probability that this protocol launches, and not a horizon: the snapshot carries no dated launch outcomes.');
+  lines.push('- Peer odds are the share of comparable protocols already recording a token in this snapshot, not a probability that this protocol launches, and not a horizon: the snapshot carries no dated launch outcomes. Expected value inherits that limit.');
+  lines.push('- The value model\'s specification was chosen after its blind tests ran on this same snapshot, so its gate numbers are provisional evidence; a later snapshot is the clean confirmation.');
   lines.push('- Gas costs are planning estimates at snapshot-time prices; a congested chain costs more, and the break-even moves with it.');
   lines.push('- Two runs on the same snapshot are byte-identical: the fit, the bootstrap, and the report are all deterministic.');
   lines.push('');

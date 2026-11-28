@@ -89,6 +89,12 @@ export interface FarmEconomics {
   evidence_status: 'supported' | 'partial';
   /** The decisive reason for the verdict, beside the verdict itself. */
   verdict_reason: string;
+  /** Peer-implied expected value: implied value times the published token-recorded odds. Not a payout forecast. */
+  expected_value_usd: number;
+  /** Expected value net of total cost, per hour of attention: (EV - cost) / hours. The verdict's ratio in radar-5. */
+  net_per_hour_usd: number;
+  /** Net per hour if the user's own gross reward were $0, $50, $250, or $1,000: (reward - cost) / hours. */
+  reward_scenarios: Array<{ reward_usd: number; net_per_hour_usd: number }>;
 }
 
 /** The forgone yield assumed on deployed capital, a year of it. */
@@ -112,6 +118,12 @@ export function costParts(p: Protocol, ageDays: number | null): {
 /** The whole cost of farming a protocol: gas plus forgone yield plus the exit transaction. */
 export function totalCostFor(p: Protocol, ageDays: number | null): number {
   return costParts(p, ageDays).total;
+}
+
+/** The attention a plan asks for, in hours: set up, open, weekly tending, claim, settle. */
+export function planHours(ageDays: number | null): number {
+  const weeks = Math.max(1, Math.ceil(holdDays(ageDays) / 7));
+  return roundTo(0.25 + 0.5 + weeks * 0.25 + 0.25 + 0.1, 2);
 }
 
 /** Whether the plan's evidence is complete: a listing date and at least one chain on record. */
@@ -239,6 +251,7 @@ export function buildFarmPlan(
   ageDays: number | null,
   asOf: string,
   impliedUsd: number,
+  expectedUsd: number,
   tercile: 'FARM' | 'THIN' | 'SKIP',
   efficiency: number,
 ): FarmPlan {
@@ -250,7 +263,7 @@ export function buildFarmPlan(
   const weeklyGas = gasTx;
   const parts = costParts(p, ageDays);
   const gasTotal = parts.gas_total;
-  const hours = roundTo(0.25 + 0.5 + weeks * 0.25 + 0.25 + 0.1, 2);
+  const hours = planHours(ageDays);
   const holdEnd = plusDays(asOf, hold);
   const opportunity = parts.opportunity;
   const exitFee = parts.exit_fee;
@@ -261,14 +274,19 @@ export function buildFarmPlan(
   const breakEvenShare = roundTo((breakEven / Math.max(1, impliedUsd)) * 100, 6);
   const evidence = evidenceStatus(p, ageDays);
   const verdict = finalVerdict(tercile, evidence);
+  const netPerHour = roundTo((expectedUsd - totalCost) / hours, 2);
+  const scenarios = [0, 50, 250, 1000].map((reward) => ({
+    reward_usd: reward,
+    net_per_hour_usd: roundTo((reward - totalCost) / hours, 2),
+  }));
   const reason =
     verdict === 'FARM'
-      ? `top third by implied value per dollar of total cost (${Math.round(efficiency).toLocaleString('en-US')} per $1), break-even $${Math.round(breakEven)} is ${breakEvenShare}% of implied value.`
+      ? `top third by expected value per hour ($${netPerHour.toLocaleString('en-US')}/h net of cost; ${Math.round(efficiency).toLocaleString('en-US')} expected dollars per cost dollar), break-even $${Math.round(breakEven)} is ${breakEvenShare}% of implied value.`
       : verdict === 'THIN' && tercile === 'FARM'
-        ? `top third on cost, but the plan's evidence is partial (${ageDays === null ? 'no listing date on record' : 'no chain on record'}), so it farms thin.`
+        ? `top third on expected value per hour, but the plan's evidence is partial (${ageDays === null ? 'no listing date on record' : 'no chain on record'}), so it farms thin.`
         : verdict === 'THIN'
-          ? `middle third by implied value per dollar of total cost (${Math.round(efficiency).toLocaleString('en-US')} per $1): worth it only if the chain stays cheap.`
-          : `bottom third by implied value per dollar of total cost (${Math.round(efficiency).toLocaleString('en-US')} per $1): the cost buys too little implied value.`;
+          ? `middle third by expected value per hour ($${netPerHour.toLocaleString('en-US')}/h net of cost): worth it only if the chain stays cheap.`
+          : `bottom third by expected value per hour ($${netPerHour.toLocaleString('en-US')}/h net of cost): the cost buys too little expected value.`;
   const play = playbookFor(p.category);
   const steps = [
     stepLine(
@@ -293,7 +311,7 @@ export function buildFarmPlan(
       '15 minutes',
     ),
     stepLine(
-      `Settle up: ${money(totalCost)} total cost (${money(gasTotal)} gas, ${money(opportunity)} forgone yield, ${money(exitFee)} to exit), break-even ${money(breakEven)} (low ${money(breakEvenLow)}, high ${money(breakEvenHigh)}) against ${money(Math.round(impliedUsd))} implied. Verdict: ${verdict}.`,
+      `Settle up: ${money(totalCost)} total cost (${money(gasTotal)} gas, ${money(opportunity)} forgone yield, ${money(exitFee)} to exit), break-even ${money(breakEven)} (low ${money(breakEvenLow)}, high ${money(breakEvenHigh)}) against ${money(Math.round(impliedUsd))} implied and ${money(Math.round(expectedUsd))} peer-implied expected value — $${netPerHour.toLocaleString('en-US')} net per hour over ${hours} hours. Verdict: ${verdict}.`,
       `${money(totalCost)} all in; the ${money(deposit)} deposit returns on exit`,
       `${hours} hours across ${hold} days`,
     ),
@@ -319,6 +337,9 @@ export function buildFarmPlan(
       break_even_high_usd: breakEvenHigh,
       evidence_status: evidence,
       verdict_reason: reason,
+      expected_value_usd: Math.round(expectedUsd),
+      net_per_hour_usd: netPerHour,
+      reward_scenarios: scenarios,
     },
   };
 }

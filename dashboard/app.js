@@ -1,4 +1,4 @@
-// Radar-4's dashboard: a pure rendering of window.RADAR, the dataset main.ts writes
+// Radar-5's dashboard: a pure rendering of window.RADAR, the dataset main.ts writes
 // beside dashboard/. The page makes no requests and derives nothing twice: the board,
 // the model panel, the accounting, and the detail drawer all read the same shipped
 // figures, so the page cannot disagree with board.json. One check proves the wiring:
@@ -18,7 +18,7 @@
   }
 
   var COMPARE_MAX = 3;
-  var state = { q: '', category: '', verdict: '', sort: 'implied', tab: 'board', selected: null, compare: [] };
+  var state = { q: '', category: '', lane: '', verdict: '', sort: 'implied', tab: 'board', selected: null, compare: [] };
   var bySlug = {};
   DATA.rows.forEach(function (r) { bySlug[r.slug] = r; });
 
@@ -61,6 +61,7 @@
     var params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     state.q = params.get('q') || '';
     state.category = params.get('category') || '';
+    state.lane = params.get('lane') || '';
     state.verdict = params.get('verdict') || '';
     state.sort = params.get('sort') || 'implied';
     state.tab = params.get('tab') === 'live' ? 'live' : 'board';
@@ -71,6 +72,7 @@
     var params = new URLSearchParams();
     if (state.q) params.set('q', state.q);
     if (state.category) params.set('category', state.category);
+    if (state.lane) params.set('lane', state.lane);
     if (state.verdict) params.set('verdict', state.verdict);
     if (state.sort !== 'implied') params.set('sort', state.sort);
     if (state.tab === 'live') params.set('tab', 'live');
@@ -85,6 +87,7 @@
     var q = state.q.trim().toLowerCase();
     return DATA.rows.filter(function (r) {
       if (state.category && (r.category || 'Uncategorized') !== state.category) return false;
+      if (state.lane && r.lane !== state.lane) return false;
       if (state.verdict && r.farm.verdict !== state.verdict) return false;
       if (!q) return true;
       var hay = [r.name, r.slug, r.category || '', (r.chains || []).join(' ')].join(' ').toLowerCase();
@@ -96,6 +99,9 @@
     if (key === 'growth') return row.change_7d === null ? -Infinity : row.change_7d;
     if (key === 'age') return row.age_days === null ? -1 : row.age_days;
     if (key === 'efficiency') return row.farm.efficiency;
+    if (key === 'expected') return row.expected_value_usd;
+    if (key === 'nethour') return row.farm.net_per_hour_usd;
+    if (key === 'odds') return row.odds.odds;
     return row.implied_value_usd;
   }
   function orderedRows(list) {
@@ -113,7 +119,7 @@
     var loo = DATA.validation.loo;
     var walk = DATA.validation.walk_forward;
     var tiles = [
-      [cov.total + ' / ' + cov.total, 'protocols accounted for'],
+      [cov.total + ' / ' + cov.total, 'protocols accounted for, 4 lanes'],
       [String(cov.ranked), 'pre-token launches ranked'],
       [cov.watchlist_covered + ' / ' + cov.watchlist_size, 'watchlist covered'],
       [String(DATA.fit.comp_count), 'trading protocols fitted the model'],
@@ -127,6 +133,36 @@
       tile.appendChild(tag('span', null, t[1]));
       kpis.appendChild(tile);
     });
+  }
+
+  // -- lanes ----------------------------------------------------------------------
+  function renderLanes() {
+    var box = document.getElementById('lanes');
+    var lanes = DATA.coverage.lanes;
+    var cards = [
+      ['watchlist', lanes.watchlist, 'Watchlist — no token recorded', 'Ranked. On the snapshot\u2019s watchlist: at or above the $50M floor, no token on record.'],
+      ['early', lanes.early, 'Early — below the $50M floor', 'Ranked. Pre-token launches the watchlist leaves out; the radar exists to find these early.'],
+      ['token-live', lanes['token-live'], 'Token-live — priced, not ranked', 'Already record a token. They price the model as comps and are never ranked as launches.'],
+      ['set-aside', lanes['set-aside'], 'Set aside — with reason', 'Pre-token but not a launch candidate: wrapped, staked, bridged, versioned, or exchange products.'],
+    ];
+    box.textContent = '';
+    cards.forEach(function (c) {
+      var card = tag('div', 'lane-card ' + c[0]);
+      card.appendChild(tag('b', null, String(c[1])));
+      card.appendChild(tag('h3', null, c[2]));
+      card.appendChild(tag('p', null, c[3]));
+      box.appendChild(card);
+    });
+  }
+
+  function renderSetAside() {
+    var panel = document.getElementById('setaside');
+    var rows = DATA.set_aside || [];
+    panel.appendChild(tag('h2', null, 'Set aside, with the reason named'));
+    panel.appendChild(tag('p', 'intro', rows.length + ' pre-token protocols are not ranked as launches. The 20 richest are below; every one carries the rule that set it aside, the same rule the snapshot\u2019s watchlist uses.'));
+    panel.appendChild(miniTable(['Protocol', 'Category', 'TVL', 'Reason'], rows.slice(0, 20).map(function (r) {
+      return [r.name, r.category || 'Uncategorized', moneyShort(r.tvl_usd), r.reason];
+    }), -1));
   }
 
   // -- model panel ---------------------------------------------------------------
@@ -156,7 +192,7 @@
       ? 'growth fitted (' + (val.loo.final_growth !== undefined ? 'dropped: it worsens leave-one-out' : 'dropped') + '), age fitted and dropped the same way — neither moves a value'
       : 'growth coefficient ' + fit.growth_coef;
     formula.textContent =
-      'log(market cap) = ' + fit.intercept + ' + ' + fit.slope + ' \u00d7 log(TVL) + ' + fit.w_coef + ' \u00d7 within-category size + category shift (shrunk n / (n + 4)) + chain shift (shrunk n / (n + 4))\n' +
+      'log(market cap) = ' + fit.intercept + ' + ' + fit.slope + ' \u00d7 log(TVL) + ' + fit.w_coef + ' \u00d7 within-category size + chain shift (shrunk n / (n + 4), fitted first) + category shift (shrunk n / (n + 4))\n' +
       'implied = exp(model), rounded to whole dollars. ' + growthNote + '.';
     panel.appendChild(formula);
     var grid = tag('div', 'model-grid');
@@ -187,6 +223,14 @@
     grid.appendChild(left);
     grid.appendChild(right);
     panel.appendChild(grid);
+    var ov = DATA.odds_validation;
+    panel.appendChild(tag('h3', 'odds-head', 'Peer token-recorded odds, tested the same way'));
+    panel.appendChild(tag('p', 'intro', 'Each ranked row also carries the rate at which its peers — same age band, category, and TVL band — already record a token in this snapshot (base rate ' + Math.round(ov.base_rate * 1000) / 10 + '%). The estimator is a fixed hierarchy (global, age, category, size; prior strengths 20, 12, 8) with no band swept, tested leave-one-out and on two chronological splits. It is a peer-recorded rate, not a forecast that a protocol launches.'));
+    panel.appendChild(miniTable(['Odds test (log loss / Brier)', 'Hierarchy', 'Age-only', 'Global'], [
+      ['Leave-one-out (n=' + ov.loo.n + ')', ov.loo.hierarchy.log_loss.toFixed(4) + ' / ' + ov.loo.hierarchy.brier.toFixed(4), ov.loo.age_only.log_loss.toFixed(4) + ' / ' + ov.loo.age_only.brier.toFixed(4), ov.loo.global.log_loss.toFixed(4) + ' / ' + ov.loo.global.brier.toFixed(4)],
+      ['Chronological pooled (n=' + ov.chrono_pooled.n + ')', ov.chrono_pooled.hierarchy.log_loss.toFixed(4) + ' / ' + ov.chrono_pooled.hierarchy.brier.toFixed(4), ov.chrono_pooled.age_only.log_loss.toFixed(4) + ' / ' + ov.chrono_pooled.age_only.brier.toFixed(4), ov.chrono_pooled.global.log_loss.toFixed(4) + ' / ' + ov.chrono_pooled.global.brier.toFixed(4)],
+    ], ov.hierarchy_kept ? 0 : -1));
+    panel.appendChild(tag('p', 'intro', ov.decision));
   }
 
   // -- accounting ------------------------------------------------------------------
@@ -197,10 +241,11 @@
     var recon = tag('div', 'recon');
     [
       cov.total + ' in the snapshot',
-      cov.ranked + ' ranked',
-      cov.excluded_pre_token + ' pre-token set aside',
-      cov.traded + ' already trading',
-      cov.watchlist_covered + '/' + cov.watchlist_size + ' watchlist',
+      cov.lanes.watchlist + ' watchlist lane',
+      cov.lanes.early + ' early lane',
+      cov.lanes['token-live'] + ' token-live lane',
+      cov.lanes['set-aside'] + ' set aside',
+      cov.watchlist_covered + '/' + cov.watchlist_size + ' watchlist covered',
     ].forEach(function (s) { recon.appendChild(tag('span', null, s)); });
     panel.appendChild(recon);
     var reasons = Object.keys(cov.excluded_by_reason || {}).sort().map(function (k) {
@@ -208,7 +253,7 @@
     });
     if (reasons.length) panel.appendChild(tag('p', 'intro', 'Set aside: ' + reasons.join(' · ') + '.'));
     var econ = DATA.economy;
-    panel.appendChild(tag('p', 'intro', 'Verdicts split the board into thirds by implied value per dollar of total cost — gas plus forgone yield plus the exit transaction — FARM at or above ' + econ.verdict_cuts.farm_above.toLocaleString('en-US') + ', SKIP below ' + econ.verdict_cuts.skip_below.toLocaleString('en-US') + ' — with ' + econ.verdict_counts.FARM + ' FARM, ' + econ.verdict_counts.THIN + ' THIN, and ' + econ.verdict_counts.SKIP + ' SKIP. A top-third row whose evidence is partial farms thin instead.'));
+    panel.appendChild(tag('p', 'intro', 'Verdicts split the board into thirds by net expected value per hour of attention — (implied value \u00d7 peer odds \u2212 total cost) / hours — FARM at or above $' + econ.verdict_cuts.farm_above.toLocaleString('en-US') + '/h, SKIP below $' + econ.verdict_cuts.skip_below.toLocaleString('en-US') + '/h — with ' + econ.verdict_counts.FARM + ' FARM, ' + econ.verdict_counts.THIN + ' THIN, and ' + econ.verdict_counts.SKIP + ' SKIP. A top-third row whose evidence is partial farms thin instead. Expected value is a peer-implied expectation, not a promised payout; each plan also shows net per hour at $0, $50, $250, and $1,000 gross-reward scenarios.'));
     var method = tag('div', 'method');
     (DATA.methodology || []).forEach(function (m) { method.appendChild(tag('p', null, m)); });
     panel.appendChild(method);
@@ -225,8 +270,8 @@
     tbody.textContent = '';
     if (list.length === 0) {
       var empty = tag('tr', 'empty-row');
-      var cell = tag('td', null, 'No protocol matches that filter — clear the search or pick another category or verdict.');
-      cell.colSpan = 8;
+      var cell = tag('td', null, 'No protocol matches that filter — clear the search or pick another category, lane, or verdict.');
+      cell.colSpan = 11;
       empty.appendChild(cell);
       tbody.appendChild(empty);
       return;
@@ -243,11 +288,22 @@
       var who = tag('td', 'who');
       who.appendChild(tag('b', null, r.name));
       who.appendChild(tag('span', null, (r.category || 'Uncategorized') + ' · ' + chainsLabel(r.chains, 2)));
+      who.appendChild(tag('span', 'lane-chip ' + r.lane, r.lane === 'watchlist' ? 'Watchlist lane' : 'Early lane'));
       tr.appendChild(who);
       tr.appendChild(tag('td', 'num', moneyShort(r.tvl_usd)));
       var growth = tag('td', 'num ' + (r.change_7d === null ? '' : r.change_7d >= 0 ? 'up' : 'down'), pct(r.change_7d));
       tr.appendChild(growth);
       tr.appendChild(tag('td', 'num', moneyShort(r.implied_value_usd)));
+      var oddsCell = tag('td', 'num');
+      oddsCell.appendChild(document.createTextNode(Math.round(r.odds.odds * 100) + '%'));
+      var bar = tag('span', 'odds-bar');
+      var fill = tag('span', 'odds-fill');
+      fill.style.width = Math.max(2, Math.round(r.odds.odds * 100)) + '%';
+      bar.appendChild(fill);
+      oddsCell.appendChild(bar);
+      tr.appendChild(oddsCell);
+      tr.appendChild(tag('td', 'num', moneyShort(r.expected_value_usd)));
+      tr.appendChild(tag('td', 'num', moneyShort(r.farm.net_per_hour_usd) + '/h'));
       tr.appendChild(tag('td', 'num', r.rank_low + '\u2013' + r.rank_high));
       var verdictCell = tag('td');
       verdictCell.appendChild(verdictPill(r.farm.verdict));
@@ -320,6 +376,8 @@
     audit.appendChild(auditRow('Growth factor (7d ' + pct(row.change_7d) + ', fitted and dropped)', '\u00d71.0000'));
     audit.appendChild(auditRow('Age factor (' + ageLabel(row.age_days) + ', fitted and dropped)', '\u00d71.0000'));
     audit.appendChild(auditRow('Implied value', moneyFull(row.implied_value_usd), true));
+    audit.appendChild(auditRow('Peer token-recorded odds (published rate)', Math.round(row.odds.odds * 1000) / 10 + '%'));
+    audit.appendChild(auditRow('Expected value (implied \u00d7 odds)', moneyFull(row.expected_value_usd), true));
     drawer.appendChild(audit);
     var recomputed = Math.max(1, Math.round(row.curve_exact * row.growth_exact * row.age_exact));
     var verdict = recomputed === row.implied_value_usd
@@ -344,8 +402,16 @@
     });
     kin.appendChild(kinBody);
     drawer.appendChild(kin);
-    var peers = tag('p', 'recompute', row.peers.n + ' comparable protocols sit near this TVL in ' + (row.category || 'Uncategorized') + ', and ' + row.peers.traded + ' of them already trade — a smoothed share of ' + Math.round(row.peers.prevalence * 100) + '% already trading. That is a snapshot share of the peer group, not a probability this protocol launches.');
-    drawer.appendChild(peers);
+    drawer.appendChild(tag('h3', null, 'Peer token-recorded odds'));
+    var oddsPanel = tag('div', 'audit');
+    oddsPanel.appendChild(auditRow('Closest peers (same age band, category, TVL band)', row.odds.closest.recorded + ' / ' + row.odds.closest.n + ' record a token'));
+    oddsPanel.appendChild(auditRow('Category peers (same age band + category)', row.odds.category_peers.recorded + ' / ' + row.odds.category_peers.n));
+    oddsPanel.appendChild(auditRow('Age peers (' + row.odds.age_band + ')', row.odds.age_peers.recorded + ' / ' + row.odds.age_peers.n));
+    oddsPanel.appendChild(auditRow('Age-only rate', Math.round(row.odds.age_odds * 1000) / 10 + '%'));
+    oddsPanel.appendChild(auditRow('Full hierarchy rate', Math.round(row.odds.hierarchy_odds * 1000) / 10 + '%'));
+    oddsPanel.appendChild(auditRow('Published odds', Math.round(row.odds.odds * 1000) / 10 + '%', true));
+    drawer.appendChild(oddsPanel);
+    drawer.appendChild(tag('p', 'recompute', 'This is the rate at which comparable protocols already record a token in this snapshot — a peer-recorded rate, not a probability that ' + row.name + ' launches. Expected value above inherits that limit.'));
 
     drawer.appendChild(tag('h3', null, 'Farm plan — ' + row.farm.hold_days + ' days, ' + row.farm.start_date + ' to ' + row.farm.hold_end_date));
     var plan = tag('ol', 'plan');
@@ -372,7 +438,8 @@
       ['$' + row.farm.break_even_usd, 'break-even allocation'],
       ['$' + row.farm.break_even_low_usd + ' – $' + row.farm.break_even_high_usd, 'break-even at half / double gas'],
       [row.farm.break_even_share_pct + '%', 'of implied value'],
-      [row.farm.efficiency.toLocaleString('en-US'), 'implied $ per cost $'],
+      [moneyShort(row.farm.net_per_hour_usd) + '/h', 'net expected value per hour'],
+      [row.farm.efficiency.toLocaleString('en-US'), 'expected $ per cost $'],
       [row.farm.evidence_status, 'evidence'],
     ].forEach(function (pair) {
       var cell = tag('div');
@@ -381,6 +448,11 @@
       econ.appendChild(cell);
     });
     drawer.appendChild(econ);
+    drawer.appendChild(tag('h3', null, 'If your gross reward were\u2026'));
+    drawer.appendChild(miniTable(['Gross reward to you', 'Net per hour'], row.farm.reward_scenarios.map(function (s) {
+      return [moneyFull(s.reward_usd), '$' + s.net_per_hour_usd.toLocaleString('en-US') + '/h'];
+    }), -1));
+    drawer.appendChild(tag('p', 'recompute', 'Scenarios, not forecasts: the snapshot carries no allocation evidence, so the reward is yours to assume. Break-even is the reward that covers the whole cost.'));
     var verdictLine = tag('p', 'recompute', 'Verdict: ' + row.farm.verdict + ' — ' + row.farm.verdict_reason);
     drawer.appendChild(verdictLine);
 
@@ -469,6 +541,9 @@
       select.appendChild(option);
     });
     select.value = state.category;
+    var lane = document.getElementById('lane');
+    lane.value = state.lane;
+    lane.addEventListener('change', function () { state.lane = lane.value; writeHash(); renderBoard(); });
     var search = document.getElementById('q');
     search.value = state.q;
     search.addEventListener('input', function () { state.q = search.value; writeHash(); renderBoard(); });
@@ -489,7 +564,9 @@
 
   readHash();
   renderKpis();
+  renderLanes();
   renderModel();
+  renderSetAside();
   renderAccounting();
   renderLive();
   wireControls();

@@ -3,21 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Launch Radar — a fitted value for every protocol still without a token</title>
-<meta name="description" content="198 pre-token protocols ranked by a fitted value model learned from the snapshot's own trading protocols, each with a rank range from 200 refits and a dated, costed farm plan.">
+<title>Token Launch Radar — fitted value, peer odds, and net-per-hour farm verdicts</title>
+<meta name="description" content="All 758 snapshot protocols in four named lanes; 198 pre-token launches ranked by a fitted value model, each with peer token-recorded odds, a rank range from 200 refits, and a dated farm plan priced by net value per hour.">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <a class="skip" href="#board">Skip to the board</a>
 <header class="mast">
   <div class="mast-inner">
-    <p class="eyebrow">Token launch radar · model radar-4</p>
+    <p class="eyebrow">Token launch radar · model radar-5</p>
     <h1>Which launch is worth farming?</h1>
-    <p class="standfirst">Every protocol in the snapshot that still has no token, ranked by the value a fitted model puts on its TVL — with a rank range that says how sure the model is, and a farm plan that says what the position costs, in dollars, days, and hours.</p>
+    <p class="standfirst">Every protocol in the snapshot, accounted for in four lanes. The pre-token launches are ranked by a fitted value model, weighted by how often their peers already record a token, and priced by what an hour of farming them nets — with a rank range that says how sure the model is.</p>
   </div>
 </header>
 <main>
   <section class="kpis" id="kpis" aria-label="Snapshot summary"></section>
+  <section class="lanes" id="lanes" aria-label="The four lanes"></section>
   <section class="controls" aria-label="Board controls">
     <div class="tabs" role="tablist" aria-label="Board views">
       <button type="button" role="tab" id="tab-board" aria-selected="true">Launch board</button>
@@ -28,6 +29,13 @@
     </label>
     <label class="field">Category
       <select id="category"><option value="">All categories</option></select>
+    </label>
+    <label class="field">Lane
+      <select id="lane">
+        <option value="">All ranked lanes</option>
+        <option value="watchlist">Watchlist</option>
+        <option value="early">Early</option>
+      </select>
     </label>
     <label class="field">Verdict
       <select id="verdict">
@@ -40,10 +48,13 @@
     <label class="field">Sort by
       <select id="sort">
         <option value="implied">Implied value</option>
+        <option value="expected">Expected value</option>
+        <option value="nethour">Net per hour</option>
+        <option value="odds">Peer odds</option>
         <option value="tvl">TVL</option>
         <option value="growth">7-day change</option>
         <option value="age">Age</option>
-        <option value="efficiency">Implied per gas dollar</option>
+        <option value="efficiency">Expected per cost dollar</option>
       </select>
     </label>
     <p class="count" id="count" aria-live="polite"></p>
@@ -56,6 +67,9 @@
         <th scope="col">TVL</th>
         <th scope="col">7d</th>
         <th scope="col">Implied value</th>
+        <th scope="col">Peer odds</th>
+        <th scope="col">Expected value</th>
+        <th scope="col">Net / hour</th>
         <th scope="col">Rank range</th>
         <th scope="col">Verdict</th>
         <th scope="col">Farm cost</th>
@@ -77,6 +91,7 @@
     </table>
   </section>
   <section class="panel" id="model" aria-label="The fitted model"></section>
+  <section class="panel" id="setaside" aria-label="Set aside with reason"></section>
   <section class="panel" id="accounting" aria-label="Coverage and method"></section>
 </main>
 <dialog id="detail" aria-label="Protocol detail"></dialog>
